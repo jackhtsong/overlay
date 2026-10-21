@@ -285,29 +285,8 @@ struct OverlayView: View {
                 thumbnail(model.info[3], size: 280)
                 Text(model.info[1]).font(.title3.bold()).lineLimit(1)
                 Text(model.info[2]).foregroundStyle(.secondary).lineLimit(1)
-                // Position is in seconds (with a locale-dependent decimal mark), duration in ms.
-                let duration = Double(max(Int(model.info[6]) ?? 0, 1))
-                let position = min(model.scrubPosition ?? (Double(model.info[5].replacingOccurrences(of: ",", with: ".")) ?? 0) * 1000, duration)
-                VStack(spacing: 4) {
-                    Slider(value: Binding(get: { position }, set: { model.scrubPosition = $0 }), in: 0...duration, onEditingChanged: model.seek)
-                        .controlSize(.small).tint(.white)
-                    HStack {
-                        Text(time(Int(position)))
-                        Spacer()
-                        Text(time(Int(duration)))
-                    }
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                }
-                HStack(spacing: 32) {
-                    Button { model.send("previous track") } label: { Image(systemName: "backward.fill") }
-                    Button { model.send("playpause") } label: {
-                        Image(systemName: model.info[0] == "playing" ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 48))
-                    }
-                    Button { model.send("next track") } label: { Image(systemName: "forward.fill") }
-                }
-                .font(.title2)
-                .buttonStyle(Hit())
+                progressBar()
+                controls(playSize: 48).font(.title2)
                 HStack(spacing: 10) {
                     Image(systemName: "speaker.fill")
                     Slider(value: Binding(get: { model.volume }, set: model.setVolume), in: 0...100).controlSize(.small).tint(.white)
@@ -322,6 +301,65 @@ struct OverlayView: View {
         }
         .padding(28)
         .frame(width: 340)
+    }
+
+    // Times sit under the bar in the main player, and either side of it (inline) in the mini player.
+    func progressBar(inline: Bool = false) -> some View {
+        // Position is in seconds (with a locale-dependent decimal mark), duration in ms.
+        let duration = Double(max(Int(model.info[6]) ?? 0, 1))
+        let position = min(model.scrubPosition ?? (Double(model.info[5].replacingOccurrences(of: ",", with: ".")) ?? 0) * 1000, duration)
+        let bar = Slider(value: Binding(get: { position }, set: { model.scrubPosition = $0 }), in: 0...duration, onEditingChanged: model.seek)
+            .controlSize(.small).tint(.white)
+        let elapsed = Text(time(Int(position))), total = Text(time(Int(duration)))
+        return Group {
+            if inline {
+                HStack(spacing: 10) { elapsed; bar; total }
+            } else {
+                VStack(spacing: 4) {
+                    bar
+                    HStack { elapsed; Spacer(); total }
+                }
+            }
+        }
+        .font(.caption.monospacedDigit())
+        .foregroundStyle(.secondary)
+    }
+
+    func controls(playSize: CGFloat) -> some View {
+        HStack(spacing: playSize * 0.66) {
+            Button { model.send("previous track") } label: { Image(systemName: "backward.fill") }
+            Button { model.send("playpause") } label: {
+                Image(systemName: model.info[0] == "playing" ? "pause.circle.fill" : "play.circle.fill").font(.system(size: playSize))
+            }
+            Button { model.send("next track") } label: { Image(systemName: "forward.fill") }
+        }
+        .buttonStyle(Hit())
+    }
+
+    // Compact now-playing bar under the playlist grid and inside an opened playlist.
+    @ViewBuilder var miniPlayer: some View {
+        if model.info.count == 8 {
+            // Song on the left, controls and bar centred, and an equal-width spacer on the right so the
+            // centre column really is centred.
+            HStack(spacing: 16) {
+                HStack(spacing: 12) {
+                    thumbnail(model.info[3], size: 48)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.info[1]).lineLimit(1)
+                        Text(model.info[2]).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                .frame(width: 170, alignment: .leading)
+                VStack(spacing: 6) {
+                    controls(playSize: 34)
+                    progressBar(inline: true)
+                }
+                .frame(maxWidth: .infinity)
+                Color.clear.frame(width: 170, height: 1)
+            }
+            .padding(12)
+            .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+        }
     }
 
     var library: some View {
@@ -346,11 +384,12 @@ struct OverlayView: View {
                         }
                     }
                 }
+                miniPlayer
                 attribution("spotify:")
             }
         }
         .padding(28)
-        .frame(width: 720, height: 540, alignment: .topLeading)
+        .frame(width: 720, height: 620, alignment: .topLeading)
         .overlay {
             if let p = model.open { songsPanel(p) }
         }
@@ -460,6 +499,7 @@ struct OverlayView: View {
                     }
                 }
             }
+            miniPlayer
             attribution(p.uri)
         }
         .padding(28)
@@ -528,7 +568,6 @@ func pinToOverlaySpace(_ window: NSWindow) {
 }
 
 final class Panel: NSPanel {
-    var onEscape: () -> Void = {}
     var interceptKey: (NSEvent) -> Bool = { _ in false }
 
     override func sendEvent(_ event: NSEvent) {
@@ -536,7 +575,6 @@ final class Panel: NSPanel {
         super.sendEvent(event)
     }
     override var canBecomeKey: Bool { true }
-    override func cancelOperation(_ sender: Any?) { onEscape() }
 
     // Menu-bar-only apps have no Edit menu, so ⌘V/⌘C/⌘X/⌘A need wiring up by hand.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -561,8 +599,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.collectionBehavior = [.fullScreenAuxiliary]
         panel.backgroundColor = .clear
         panel.contentView = NSHostingView(rootView: OverlayView(model: model) { [weak self] in self?.hide() })
-        panel.onEscape = { [weak self] in self?.hide() }
-        panel.interceptKey = { [weak self] in self?.recordShortcut($0) ?? false }
+        panel.interceptKey = { [weak self] in self?.handleKey($0) ?? false }
         // Clicking into another app closes the overlay. Swiping between Spaces also takes focus
         // away, so wait a moment and only hide if it wasn't a Space switch.
         NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) { [weak self] _ in
@@ -601,11 +638,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             EventHotKeyID(signature: 0x5350_4F56, id: 1), GetApplicationEventTarget(), 0, &hotKey)
     }
 
-    // While the shortcut button is waiting, the next key press with ⌘, ⌥ or ⌃ becomes the new shortcut.
-    // Esc cancels; keys without one of those modifiers are ignored so typing can't clobber it.
-    func recordShortcut(_ e: NSEvent) -> Bool {
+    // Esc closes the overlay. While the shortcut button is waiting, Esc cancels instead, and the next
+    // key press with ⌘, ⌥ or ⌃ becomes the new shortcut; other keys are ignored so typing can't clobber it.
+    func handleKey(_ e: NSEvent) -> Bool {
+        if Int(e.keyCode) == kVK_Escape {
+            model.recordingShortcut ? (model.recordingShortcut = false) : hide()
+            return true
+        }
         guard model.recordingShortcut else { return false }
-        if Int(e.keyCode) == kVK_Escape { model.recordingShortcut = false; return true }
         let flags = e.modifierFlags.intersection([.command, .option, .control, .shift])
         guard !flags.intersection([.command, .option, .control]).isEmpty else { return true }
 
