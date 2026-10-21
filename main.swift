@@ -131,6 +131,7 @@ func api<T: Decodable>(_ path: String) async throws -> T { try JSONDecoder().dec
 final class Model: ObservableObject {
     @Published var info: [String] = []
     @Published var volume: Double = 50
+    @Published var scrubPosition: Double?  // ms, while the progress bar is being dragged
     @Published var shortcut = shortcutLabel
     @Published var recordingShortcut = false
     @Published var showLibrary = false
@@ -145,14 +146,29 @@ final class Model: ObservableObject {
     var timer: Timer?
 
     func refresh() {
-        let out = spotify("player state as string & linefeed & name of current track & linefeed & artist of current track & linefeed & artwork url of current track & linefeed & sound volume & linefeed & spotify url of current track")
+        let out = spotify("player state as string & linefeed & name of current track & linefeed & artist of current track & linefeed & artwork url of current track & linefeed & sound volume & linefeed & player position & linefeed & duration of current track & linefeed & spotify url of current track")
         info = out.components(separatedBy: "\n")
-        if info.count == 6, let v = Double(info[4]) { volume = v }
+        if info.count == 8, let v = Double(info[4]) { volume = v }
     }
 
+    // Update the screen straight away with what the click will do, then check Spotify a few times
+    // over the next second, since it takes a moment to load a new track. Each check takes ~5 ms.
     func send(_ command: String) {
+        if info.count == 8 {
+            if command == "playpause" { info[0] = info[0] == "playing" ? "paused" : "playing" }
+            if command.hasSuffix("track") { info[5] = "0" }
+        }
         _ = spotify(command)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.refresh() }
+        for delay in [0.1, 0.3, 0.6, 1.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { self.refresh() }
+        }
+    }
+
+    func seek(editing: Bool) {
+        guard !editing, let ms = scrubPosition else { return }
+        _ = spotify("set player position to \(ms / 1000)")
+        refresh()
+        scrubPosition = nil
     }
 
     func setVolume(_ v: Double) {
@@ -265,10 +281,24 @@ struct OverlayView: View {
                 .foregroundStyle(model.recordingShortcut ? .primary : .secondary)
                 .help("Change the shortcut that opens the overlay")
             }
-            if model.info.count == 6 {
+            if model.info.count == 8 {
                 thumbnail(model.info[3], size: 280)
                 Text(model.info[1]).font(.title3.bold()).lineLimit(1)
                 Text(model.info[2]).foregroundStyle(.secondary).lineLimit(1)
+                // Position is in seconds (with a locale-dependent decimal mark), duration in ms.
+                let duration = Double(max(Int(model.info[6]) ?? 0, 1))
+                let position = min(model.scrubPosition ?? (Double(model.info[5].replacingOccurrences(of: ",", with: ".")) ?? 0) * 1000, duration)
+                VStack(spacing: 4) {
+                    Slider(value: Binding(get: { position }, set: { model.scrubPosition = $0 }), in: 0...duration, onEditingChanged: model.seek)
+                        .controlSize(.small).tint(.white)
+                    HStack {
+                        Text(time(Int(position)))
+                        Spacer()
+                        Text(time(Int(duration)))
+                    }
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                }
                 HStack(spacing: 32) {
                     Button { model.send("previous track") } label: { Image(systemName: "backward.fill") }
                     Button { model.send("playpause") } label: {
@@ -285,7 +315,7 @@ struct OverlayView: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                attribution(model.info[5])
+                attribution(model.info[7])
             } else {
                 Text("Spotify isn't playing").font(.title3).padding(.vertical, 40)
             }
