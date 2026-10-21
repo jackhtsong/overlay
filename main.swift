@@ -144,10 +144,15 @@ final class Model: ObservableObject {
     @Published var songs: [Track] = []
     @Published var songsMessage: String?
     var timer: Timer?
+    var holdPlayStateUntil = Date.distantPast
 
     func refresh() {
         let out = spotify("player state as string & linefeed & name of current track & linefeed & artist of current track & linefeed & artwork url of current track & linefeed & sound volume & linefeed & player position & linefeed & duration of current track & linefeed & spotify url of current track")
-        info = out.components(separatedBy: "\n")
+        var new = out.components(separatedBy: "\n")
+        // Spotify keeps reporting the old play state for a moment after play/pause; keep showing
+        // the state we switched to until it catches up, so the icon doesn't flicker back.
+        if new.count == 8, info.count == 8, Date() < holdPlayStateUntil { new[0] = info[0] }
+        info = new
         if info.count == 8, let v = Double(info[4]) { volume = v }
     }
 
@@ -155,7 +160,10 @@ final class Model: ObservableObject {
     // over the next second, since it takes a moment to load a new track. Each check takes ~5 ms.
     func send(_ command: String) {
         if info.count == 8 {
-            if command == "playpause" { info[0] = info[0] == "playing" ? "paused" : "playing" }
+            if command == "playpause" {
+                info[0] = info[0] == "playing" ? "paused" : "playing"
+                holdPlayStateUntil = Date().addingTimeInterval(1.2)
+            }
             if command.hasSuffix("track") { info[5] = "0" }
         }
         _ = spotify(command)
@@ -287,13 +295,7 @@ struct OverlayView: View {
                 Text(model.info[2]).foregroundStyle(.secondary).lineLimit(1)
                 progressBar()
                 controls(playSize: 48).font(.title2)
-                HStack(spacing: 10) {
-                    Image(systemName: "speaker.fill")
-                    Slider(value: Binding(get: { model.volume }, set: model.setVolume), in: 0...100).controlSize(.small).tint(.white)
-                    Image(systemName: "speaker.wave.3.fill")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                volumeBar
                 attribution(model.info[7])
             } else {
                 Text("Spotify isn't playing").font(.title3).padding(.vertical, 40)
@@ -325,6 +327,16 @@ struct OverlayView: View {
         .foregroundStyle(.secondary)
     }
 
+    var volumeBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "speaker.fill")
+            Slider(value: Binding(get: { model.volume }, set: model.setVolume), in: 0...100).controlSize(.small).tint(.white)
+            Image(systemName: "speaker.wave.3.fill")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+
     func controls(playSize: CGFloat) -> some View {
         HStack(spacing: playSize * 0.66) {
             Button { model.send("previous track") } label: { Image(systemName: "backward.fill") }
@@ -339,8 +351,8 @@ struct OverlayView: View {
     // Compact now-playing bar under the playlist grid and inside an opened playlist.
     @ViewBuilder var miniPlayer: some View {
         if model.info.count == 8 {
-            // Song on the left, controls and bar centred, and an equal-width spacer on the right so the
-            // centre column really is centred.
+            // Song on the left, controls and bar centred, volume on the right. The side columns are
+            // the same width so the centre column really is centred.
             HStack(spacing: 16) {
                 HStack(spacing: 12) {
                     thumbnail(model.info[3], size: 48)
@@ -355,7 +367,7 @@ struct OverlayView: View {
                     progressBar(inline: true)
                 }
                 .frame(maxWidth: .infinity)
-                Color.clear.frame(width: 170, height: 1)
+                volumeBar.frame(width: 170).offset(y: 5)
             }
             .padding(12)
             .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
