@@ -6,7 +6,7 @@ Not affiliated with, endorsed or sponsored by Spotify.
 
 ## What it does
 
-A keybind (⌥` by default, configurable) that lets you change your music without switching tabs when some bull starts playing.
+A keybind (⌥` by default, configurable) that lets you change your music without switching tabs when some butt starts playing.
 
 ## What you need
 
